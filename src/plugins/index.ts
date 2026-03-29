@@ -6,6 +6,7 @@ import rateLimit from '@fastify/rate-limit'
 import swagger from '@fastify/swagger'
 import swaggerUi from '@fastify/swagger-ui'
 import { env } from '../config/env.js'
+import { authPlugin } from './auth.js'
 
 export async function registerPlugins(server: FastifyInstance) {
   // Security
@@ -50,4 +51,7 @@ export async function registerPlugins(server: FastifyInstance) {
     routePrefix: '/docs',
     uiConfig: { docExpansion: 'list', deepLinking: true },
   })
+
+  // Auth decorator (must be after JWT)
+  await server.register(authPlugin)
 }

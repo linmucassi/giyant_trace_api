@@ -23,8 +23,6 @@ declare module '@fastify/jwt' {
 }
 
 export const authPlugin = fp(async (server: FastifyInstance) => {
-  server.decorateRequest('user', null)
-
   server.decorate('authenticate', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       await request.jwtVerify()

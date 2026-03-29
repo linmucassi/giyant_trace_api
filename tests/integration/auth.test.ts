@@ -37,7 +37,7 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
-  await app.close()
+  await app?.close()
 })
 
 describe('POST /api/v1/auth/register', () => {
