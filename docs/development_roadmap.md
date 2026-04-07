@@ -18,10 +18,12 @@ Priority: finish the features that are structurally in place but not yet functio
 
 ### 1.1 Notification Delivery
 
-- [ ] **Email via SendGrid** — implement `sendEmail()` in `src/services/notifications.ts` using the SendGrid Node SDK; wire it into process lifecycle hooks (stage advanced, completed)
-- [ ] **WhatsApp via Business API** — implement `sendWhatsApp()` in the notifications service; use `WHATSAPP_PHONE_NUMBER_ID` + `WHATSAPP_ACCESS_TOKEN`
-- [ ] **SMS via Twilio** — implement `sendSms()` in the notifications service; use `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN`
-- [ ] **Notification queue** — move delivery to a Redis-backed queue (BullMQ) for retries and backoff instead of inline await
+- [x] **Email via SendGrid** — `sendEmail()` implemented in `src/services/notifications.ts`; wired into process create, stage advance, and client-visible updates
+- [x] **WhatsApp via Business API** — `sendWhatsApp()` implemented; uses Graph API v19.0 with `WHATSAPP_PHONE_NUMBER_ID` + `WHATSAPP_ACCESS_TOKEN`
+- [x] **SMS via Twilio** — `sendSms()` implemented; uses `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN`
+- [x] **Notification audit log** — every send (success or failure) is persisted to `notifications` table
+- [x] **Workspace channel preferences** — `workspace_settings.notifications_email/whatsapp/sms` controls which channels fire
+- [ ] **Notification queue** — move delivery to a Redis-backed queue (BullMQ) for retries and backoff instead of fire-and-forget
 - [ ] **Webhook signature verification** — validate `X-Hub-Signature-256` on WhatsApp POST payloads in `src/routes/webhooks.ts`
 
 ### 1.2 File Upload & Storage
@@ -139,7 +141,7 @@ Priority: finish the features that are structurally in place but not yet functio
 
 | Phase | Focus | Status |
 |-------|-------|--------|
-| 1 | Notifications, file storage, PDF | In Progress |
+| 1 | Notifications ✓, file storage, PDF | In Progress |
 | 2 | RBAC, auth hardening, rate limits | Planned |
 | 3 | Billing, process enhancements, analytics | Planned |
 | 4 | Observability, performance, DX, testing | Planned |

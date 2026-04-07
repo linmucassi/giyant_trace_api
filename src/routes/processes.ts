@@ -1,8 +1,10 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
-import { db, processes, processStages, stageUpdates, clients } from '../db/index.js'
+import { db, processes, processStages, stageUpdates, clients, workspaceSettings } from '../db/index.js'
 import { eq, and, sql, desc } from 'drizzle-orm'
 import { generateTrackingToken, generateReferenceNumber } from '../lib/utils.js'
+import { sendNotification, type NotificationChannel } from '../services/notifications.js'
+import { env } from '../config/env.js'
 
 const createProcessSchema = z.object({
   clientId: z.string().uuid(),
@@ -29,6 +31,31 @@ const addUpdateSchema = z.object({
   content: z.string().min(1),
   isClientVisible: z.boolean().default(true),
 })
+
+/** Returns the enabled notification channels for a workspace */
+async function getEnabledChannels(workspaceId: string): Promise<NotificationChannel[]> {
+  const [settings] = await db
+    .select({
+      email: workspaceSettings.notificationsEmail,
+      whatsapp: workspaceSettings.notificationsWhatsapp,
+      sms: workspaceSettings.notificationsSms,
+    })
+    .from(workspaceSettings)
+    .where(eq(workspaceSettings.workspaceId, workspaceId))
+
+  if (!settings) return []
+
+  const channels: NotificationChannel[] = []
+  if (settings.email) channels.push('email')
+  if (settings.whatsapp) channels.push('whatsapp')
+  if (settings.sms) channels.push('sms')
+  return channels
+}
+
+/** Builds the public tracking URL for a process */
+function trackingUrl(token: string): string {
+  return `${env.WEB_URL}/track/${token}`
+}
 
 export async function processRoutes(server: FastifyInstance) {
   const preHandler = [server.authenticate]
@@ -149,6 +176,32 @@ export async function processRoutes(server: FastifyInstance) {
         .where(eq(processes.id, process.id))
     }
 
+    // Fire notification (non-blocking)
+    if (client.email || client.phone) {
+      getEnabledChannels(payload.workspaceId).then((channels) => {
+        if (!channels.length) return
+        sendNotification({
+          to: { name: client.name, email: client.email ?? undefined, phone: client.phone ?? undefined },
+          templateKey: 'process_created',
+          variables: {
+            name: client.name,
+            item: process.title,
+            link: trackingUrl(trackingToken),
+            date: process.expectedCompletionAt
+              ? new Date(process.expectedCompletionAt).toLocaleDateString()
+              : 'TBD',
+            company: 'GiyantTrace',
+          },
+          channels,
+          context: {
+            workspaceId: payload.workspaceId,
+            processId: process.id,
+            clientId: client.id,
+          },
+        }).catch((err) => server.log.error({ err }, 'process_created notification failed'))
+      })
+    }
+
     return reply.code(201).send({ success: true, data: { ...process, trackingToken } })
   })
 
@@ -159,7 +212,10 @@ export async function processRoutes(server: FastifyInstance) {
 
     const process = await db.query.processes.findFirst({
       where: and(eq(processes.id, id), eq(processes.workspaceId, payload.workspaceId)),
-      with: { stages: { orderBy: (s: any, { asc }: any) => [asc(s.order)] } },
+      with: {
+        stages: { orderBy: (s: any, { asc }: any) => [asc(s.order)] },
+        client: true,
+      },
     })
 
     if (!process) return reply.code(404).send({ success: false, error: 'Process not found' })
@@ -174,6 +230,8 @@ export async function processRoutes(server: FastifyInstance) {
         .set({ status: 'completed', completedAt: new Date() })
         .where(eq(processStages.id, currentStage.id))
     }
+
+    let isCompleted = false
 
     if (nextStage) {
       await db
@@ -199,6 +257,37 @@ export async function processRoutes(server: FastifyInstance) {
           updatedAt: new Date(),
         })
         .where(eq(processes.id, id))
+      isCompleted = true
+    }
+
+    // Fire notification (non-blocking)
+    const client = (process as any).client
+    if (client && (client.email || client.phone)) {
+      getEnabledChannels(payload.workspaceId).then((channels) => {
+        if (!channels.length) return
+
+        const templateKey = isCompleted ? 'completed' : 'stage_updated'
+        const stageName = isCompleted ? 'Completed' : (nextStage?.name ?? currentStage?.name ?? '')
+
+        sendNotification({
+          to: { name: client.name, email: client.email ?? undefined, phone: client.phone ?? undefined },
+          templateKey,
+          variables: {
+            name: client.name,
+            item: process.title,
+            stage: stageName,
+            note: '',
+            link: trackingUrl(process.trackingToken),
+            company: 'GiyantTrace',
+          },
+          channels,
+          context: {
+            workspaceId: payload.workspaceId,
+            processId: process.id,
+            clientId: client.id,
+          },
+        }).catch((err) => server.log.error({ err }, 'stage advance notification failed'))
+      })
     }
 
     return reply.send({ success: true, data: { advanced: true } })
@@ -210,11 +299,10 @@ export async function processRoutes(server: FastifyInstance) {
     const { id } = request.params as { id: string }
     const body = addUpdateSchema.parse(request.body)
 
-    // Verify process belongs to workspace
-    const [process] = await db
-      .select({ id: processes.id })
-      .from(processes)
-      .where(and(eq(processes.id, id), eq(processes.workspaceId, payload.workspaceId)))
+    const process = await db.query.processes.findFirst({
+      where: and(eq(processes.id, id), eq(processes.workspaceId, payload.workspaceId)),
+      with: { client: true },
+    })
 
     if (!process) return reply.code(404).send({ success: false, error: 'Process not found' })
 
@@ -228,6 +316,32 @@ export async function processRoutes(server: FastifyInstance) {
         createdById: payload.sub,
       })
       .returning()
+
+    // Notify client if update is client-visible
+    const client = (process as any).client
+    if (body.isClientVisible && client && (client.email || client.phone)) {
+      getEnabledChannels(payload.workspaceId).then((channels) => {
+        if (!channels.length) return
+        sendNotification({
+          to: { name: client.name, email: client.email ?? undefined, phone: client.phone ?? undefined },
+          templateKey: 'stage_updated',
+          variables: {
+            name: client.name,
+            item: process.title,
+            stage: 'Update',
+            note: body.content,
+            link: trackingUrl(process.trackingToken),
+            company: 'GiyantTrace',
+          },
+          channels,
+          context: {
+            workspaceId: payload.workspaceId,
+            processId: process.id,
+            clientId: client.id,
+          },
+        }).catch((err) => server.log.error({ err }, 'stage update notification failed'))
+      })
+    }
 
     return reply.code(201).send({ success: true, data: update })
   })
